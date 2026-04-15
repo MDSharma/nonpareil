@@ -12,6 +12,8 @@ URL: http://enve-omics.ce.gatech.edu/nonpareil/
 Depends: R (>= 2.9)
 Imports:
     methods
+Suggests:
+    testthat (>= 3.0.0)
 License: Artistic-2.0
 LazyLoad: yes
 Encoding: UTF-8

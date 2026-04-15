@@ -173,6 +173,42 @@ plot.Nonpareil.Set <- function(
       #' Any additional parameters passed to \code{Nonpareil.legend}.
       #' If FALSE, the legend is not displayed.
       legend.opts = list(),
+      #' @param aggregate
+      #' If \code{TRUE}, curves are aggregated by \code{group} using
+      #' \code{Nonpareil.group} and a consensus line (plus optional variance
+      #' ribbon) is drawn for each group instead of individual curves.
+      #' Requires \code{group} to be supplied.  Default: \code{FALSE}.
+      aggregate = FALSE,
+      #' @param group
+      #' Character (or coercible) vector of group labels, one per curve in
+      #' \code{x}.  Required when \code{aggregate = TRUE}.
+      group = NULL,
+      #' @param aggregate.col
+      #' Colors for each group (vector).  Recycled; \code{NA} assigns random
+      #' colors.  Only used when \code{aggregate = TRUE}.
+      aggregate.col = NA,
+      #' @param aggregate.ribbon
+      #' Type of variance ribbon drawn around the consensus line when
+      #' \code{aggregate = TRUE}.  Supported values:
+      #' \itemize{
+      #'   \item \code{"sd"} (default): ± one within-group SD,
+      #'   \item \code{"ci95"}: 95\% confidence interval,
+      #'   \item \code{"ci90"}: 90\% confidence interval,
+      #'   \item \code{"ci50"}: 50\% confidence interval,
+      #'   \item \code{FALSE}: no ribbon.
+      #' }
+      aggregate.ribbon = "sd",
+      #' @param plot.individual
+      #' If \code{TRUE}, individual curves are drawn at reduced alpha before
+      #' the consensus overlay.  Defaults to \code{TRUE} when
+      #' \code{aggregate = FALSE} (standard behaviour) and \code{FALSE} when
+      #' \code{aggregate = TRUE}.
+      plot.individual = !aggregate,
+      #' @param individual.alpha
+      #' Alpha level (0–1) used for individual curves when both
+      #' \code{aggregate = TRUE} and \code{plot.individual = TRUE}.
+      #' Default: \code{0.3}.
+      individual.alpha = 0.3,
       #' @param ...
       #' Any additional parameters passed to \code{plot.Nonpareil.Curve}.
       ...
@@ -180,22 +216,126 @@ plot.Nonpareil.Set <- function(
   if (!inherits(x, "Nonpareil.Set"))
     stop("'x' must inherit from class `Nonpareil.Set`")
 
-  # Plots
-  new <- TRUE;
-  col <- rep(col, length.out = length(x$np.curves))
+  # Apply per-curve col / label overrides
+  col    <- rep(col,    length.out = length(x$np.curves))
   labels <- rep(labels, length.out = length(x$np.curves))
-  for (i in 1:length(x$np.curves)) {
-    if (!is.na(col[i])) x$np.curves[[i]]$col <- col[i]
+  for (i in seq_along(x$np.curves)) {
+    if (!is.na(col[i]))    x$np.curves[[i]]$col   <- col[i]
     if (!is.na(labels[i])) x$np.curves[[i]]$label <- labels[i]
-    plot(x$np.curves[[i]], new = new, main = ifelse(new, main, ""), ...)
-    new <- FALSE
   }
 
-  # Legend
+  if (!aggregate) {
+    # --- Original behaviour (unchanged) ---
+    new <- TRUE
+    for (i in seq_along(x$np.curves)) {
+      plot(x$np.curves[[i]], new = new, main = ifelse(new, main, ""), ...)
+      new <- FALSE
+    }
+    if (inherits(legend.opts, "list")) {
+      legend.opts[["np"]] <- x
+      if (is.null(legend.opts[["x"]])) legend.opts[["x"]] <- "bottomright"
+      do.call(Nonpareil.legend, legend.opts)
+    }
+    return(invisible(x))
+  }
+
+  # --- Aggregate mode ---
+  if (is.null(group))
+    stop("'group' must be provided when 'aggregate = TRUE'")
+  if (length(group) != length(x$np.curves))
+    stop("'group' must have the same length as the number of curves in 'x'")
+
+  grp_data     <- Nonpareil.group(x, group, col = aggregate.col)
+  group.levels <- attr(grp_data, "group.levels")
+  group.col    <- attr(grp_data, "group.col")
+
+  dots <- list(...)
+
+  if (plot.individual) {
+    # Draw individual curves at reduced alpha for context
+    new <- TRUE
+    for (i in seq_along(x$np.curves)) {
+      i_args <- c(
+        list(x     = x$np.curves[[i]],
+             new   = new,
+             main  = ifelse(new, main, ""),
+             curve.alpha = individual.alpha,
+             model.alpha = individual.alpha),
+        dots[!names(dots) %in% c("curve.alpha", "model.alpha")]
+      )
+      do.call(plot, i_args)
+      new <- FALSE
+    }
+  } else {
+    # Initialise canvas only — suppress data drawing
+    canvas_args <- c(
+      list(x               = x$np.curves[[1]],
+           new             = TRUE,
+           main            = main,
+           plot.observed   = FALSE,
+           plot.model      = FALSE,
+           plot.diversity  = FALSE),
+      dots[!names(dots) %in%
+             c("plot.observed", "plot.model", "plot.diversity", "main")]
+    )
+    do.call(plot, canvas_args)
+  }
+
+  # Determine ylim for ribbon clamping
+  ylim <- if (!is.null(dots$ylim)) dots$ylim else c(1e-6, 1)
+
+  # Overlay ribbons then consensus lines
+  for (grp in group.levels) {
+    gd <- grp_data[grp_data$group == grp & !is.na(grp_data$mean_cov), ]
+    if (nrow(gd) == 0L) next
+    gcol <- group.col[[grp]]
+
+    # Ribbon
+    if (!isFALSE(aggregate.ribbon)) {
+      lo <- hi <- NULL
+      if (aggregate.ribbon == "sd") {
+        lo <- gd$mean_cov - gd$sd_cov
+        hi <- gd$mean_cov + gd$sd_cov
+      } else if (aggregate.ribbon == "ci95") {
+        lo <- gd$ci_low
+        hi <- gd$ci_high
+      } else if (aggregate.ribbon == "ci90") {
+        lo <- gd$mean_cov - 1.645 * gd$se_cov
+        hi <- gd$mean_cov + 1.645 * gd$se_cov
+      } else if (aggregate.ribbon == "ci50") {
+        lo <- gd$mean_cov - 0.674 * gd$se_cov
+        hi <- gd$mean_cov + 0.674 * gd$se_cov
+      }
+      if (!is.null(lo) && !is.null(hi)) {
+        lo <- pmax(lo, ylim[1] * 0.1, na.rm = TRUE)
+        hi <- pmin(hi, ylim[2],        na.rm = TRUE)
+        ribbon.col <- apply(
+          col2rgb(gcol), 2L,
+          function(ch) do.call(rgb, as.list(c(ch[1:3] / 256, 0.2)))
+        )
+        polygon(
+          c(gd$depth_bp, rev(gd$depth_bp)),
+          c(hi, rev(lo)),
+          col = ribbon.col, border = NA
+        )
+      }
+    }
+
+    # Consensus line
+    lines(gd$depth_bp, gd$mean_cov, col = gcol, lwd = 2)
+  }
+
+  # Legend for groups
   if (inherits(legend.opts, "list")) {
-    legend.opts[["np"]] <- x
-    if (is.null(legend.opts[["x"]])) legend.opts[["x"]] <- "bottomright"
-    do.call(Nonpareil.legend, legend.opts)
+    leg.x <- if (!is.null(legend.opts[["x"]])) legend.opts[["x"]] else "bottomright"
+    leg.y <- if (!is.null(legend.opts[["y"]])) legend.opts[["y"]] else 0.3
+    extra.opts <- legend.opts[!names(legend.opts) %in% c("np", "x", "y")]
+    do.call(legend, c(
+      list(x = leg.x, y = leg.y,
+           legend = group.levels,
+           fill   = unname(group.col)),
+      extra.opts
+    ))
   }
 
   #' @return
@@ -952,4 +1092,258 @@ Nonpareil.set <- function(
 #' Alias of \code{Nonpareil.set}.
 #' @inheritParams Nonpareil.set
 Nonpareil.curve.batch <- Nonpareil.set
+
+#' Compute group-level consensus Nonpareil curves from a \code{Nonpareil.Set}.
+#'
+#' Aggregates individual Nonpareil curves in *prediction space* (not parameter
+#' space) across all replicates within each group.  For each group, a
+#' log-spaced sequencing-depth grid is built spanning the union of observed
+#' depths across its member curves.  At every grid point each curve
+#' contributes either an interpolated value (when the depth falls within its
+#' observed range) or a model-projected value (when the depth is beyond the
+#' observed range but a fitted model exists).  A weighted mean and variance are
+#' computed across contributing curves; the inverse-variance scheme uses the
+#' within-sample standard deviation stored in the .npo file, so that
+#' well-resolved rarefaction points receive more weight than noisier or
+#' extrapolated ones.
+#'
+#' The function returns a \code{data.frame} (subclass
+#' \code{Nonpareil.Group}) that can be used directly with \code{ggplot2}:
+#' map \code{depth_bp} → x, \code{mean_cov} → y, and
+#' \code{ci_low}/\code{ci_high} → a ribbon.
+#'
+#' @section No changes to .npo files:
+#' All information required for cross-replicate aggregation (per-depth
+#' observed coverage, within-sample standard deviation, library size, and
+#' model projection) is already present in the .npo outputs produced by the
+#' Nonpareil binary.  No re-running of Nonpareil is needed.
+Nonpareil.group <- function(
+      #' @param nps
+      #' \code{Nonpareil.Set} object containing the individual curves to
+      #' aggregate.
+      nps,
+      #' @param group
+      #' Vector of group labels (character, numeric, or factor), one element
+      #' per curve in \code{nps}.  Curves sharing the same label are
+      #' aggregated together.
+      group,
+      #' @param col
+      #' Colors for each group (vector, recycled).  \code{NA} entries are
+      #' replaced by a random color.
+      col = NA,
+      #' @param n.points
+      #' Number of points on the shared log-spaced sequencing-depth grid per
+      #' group.  Default: \code{500L}.
+      n.points = 500L,
+      #' @param weights
+      #' Weighting scheme used when averaging across replicates at each depth:
+      #' \itemize{
+      #'   \item \code{"inverse_sd"} (default): weight = 1 / within-sample SD
+      #'     from the .npo file.  Observed points carry their actual SD;
+      #'     projected (model-extrapolated) points are penalised via
+      #'     \code{extrapolation.penalty}.
+      #'   \item \code{"equal"}: all contributing curves receive weight = 1.
+      #' }
+      weights = c("inverse_sd", "equal"),
+      #' @param extrapolation.penalty
+      #' Scalar in (0, 1] applied to the weight of model-projected coverage
+      #' values relative to observed/interpolated ones.  A value of 0.5 (the
+      #' default) halves the weight assigned to projected points.  Only
+      #' relevant when \code{weights = "inverse_sd"}.
+      extrapolation.penalty = 0.5
+      ) {
+  if (!inherits(nps, "Nonpareil.Set"))
+    stop("'nps' must inherit from class `Nonpareil.Set`")
+  n.curves <- length(nps$np.curves)
+  if (n.curves == 0L)
+    stop("'nps' contains no Nonpareil curves")
+  group <- as.character(group)
+  if (length(group) != n.curves)
+    stop("'group' must have the same length as the number of curves in 'nps'")
+  weights <- match.arg(weights)
+  if (extrapolation.penalty <= 0 || extrapolation.penalty > 1)
+    stop("'extrapolation.penalty' must be in the range (0, 1]")
+
+  group.levels <- unique(group)
+
+  # Assign group colors
+  col <- rep(col, length.out = length(group.levels))
+  for (gi in seq_along(group.levels)) {
+    if (is.na(col[gi])) {
+      col[gi] <- rgb(
+        sample(200L, 1L), sample(200L, 1L), sample(200L, 1L),
+        maxColorValue = 255
+      )
+    }
+  }
+  group.col <- setNames(col, group.levels)
+
+  results <- vector("list", length(group.levels))
+  names(results) <- group.levels
+
+  for (grp in group.levels) {
+    idx    <- which(group == grp)
+    curves <- nps$np.curves[idx]
+    n.g    <- length(curves)
+
+    # Shared log-spaced depth grid across all curves in this group
+    all.x <- unlist(lapply(curves, function(np) np$x.adj[np$x.adj > 0]))
+    if (length(all.x) == 0L) {
+      warning("Group '", grp, "': no positive x.adj values; skipping")
+      next
+    }
+    x.min <- min(all.x)
+    x.max <- max(all.x)
+    grid  <- exp(seq(log(x.min), log(x.max), length.out = n.points))
+
+    cov.mat <- matrix(NA_real_, nrow = n.points, ncol = n.g)
+    sd.mat  <- matrix(NA_real_, nrow = n.points, ncol = n.g)
+    obs.mat <- matrix(FALSE,    nrow = n.points, ncol = n.g)
+
+    for (j in seq_len(n.g)) {
+      np  <- curves[[j]]
+      sel <- np$x.adj > 0
+      xj  <- np$x.adj[sel]
+      yj  <- np$y.cov[sel]
+      sj  <- np$y.sd[sel]
+
+      # Interpolate within observed range (approx returns NA outside range)
+      obs_cov <- approx(xj, yj, xout = grid, rule = 1L)$y
+      obs_sd  <- approx(xj, sj, xout = grid, rule = 1L)$y
+
+      in.range <- !is.na(obs_cov)
+      cov.mat[in.range, j] <- obs_cov[in.range]
+      sd.mat[in.range, j]  <- pmax(obs_sd[in.range], 0)
+      obs.mat[in.range, j] <- TRUE
+
+      # Project outside observed range using fitted model
+      if (np$has.model) {
+        out.range <- !in.range
+        if (any(out.range)) {
+          pred <- tryCatch(
+            predict(np, lr = grid[out.range]),
+            error = function(e) rep(NA_real_, sum(out.range))
+          )
+          cov.mat[out.range, j] <- pmax(0, pmin(1, pred))
+          # Inflate SD for projected points: sd_proj = min_sd / penalty
+          pos.sd <- sj[sj > 0]
+          min.sd <- if (length(pos.sd) > 0) min(pos.sd) else .Machine$double.eps
+          sd.mat[out.range, j]  <- min.sd / extrapolation.penalty
+          obs.mat[out.range, j] <- FALSE
+        }
+      }
+    }
+
+    # Compute weights
+    w.mat <- matrix(NA_real_, nrow = n.points, ncol = n.g)
+    if (weights == "inverse_sd") {
+      eps   <- .Machine$double.eps
+      w.mat <- 1.0 / pmax(sd.mat, eps)
+    } else {
+      w.mat[!is.na(cov.mat)] <- 1.0
+    }
+
+    # Per-depth statistics
+    n.samp <- apply(!is.na(cov.mat), 1L, sum)
+    n.obs  <- apply(obs.mat,         1L, sum)
+    n.proj <- n.samp - n.obs
+
+    mean.cov <- rep(NA_real_, n.points)
+    sd.cov   <- rep(NA_real_, n.points)
+    se.cov   <- rep(NA_real_, n.points)
+
+    for (i in seq_len(n.points)) {
+      valid <- which(!is.na(cov.mat[i, ]))
+      if (length(valid) == 0L) next
+      y    <- cov.mat[i, valid]
+      w    <- w.mat[i, valid]
+      wsum <- sum(w)
+      mean.cov[i] <- sum(w * y) / wsum
+      if (length(valid) > 1L) {
+        # Reliability-weighted variance (unbiased)
+        v2 <- sum(w^2)
+        var.w <- sum(w * (y - mean.cov[i])^2) / (wsum - v2 / wsum)
+        sd.cov[i] <- sqrt(max(var.w, 0))
+        se.cov[i] <- sd.cov[i] / sqrt(length(valid))
+      } else {
+        sd.cov[i] <- 0
+        se.cov[i] <- 0
+      }
+    }
+
+    mean.cov <- pmax(0, pmin(1, mean.cov))
+    ci.low   <- pmax(0,          mean.cov - 1.96 * se.cov)
+    ci.high  <- pmin(1,          mean.cov + 1.96 * se.cov)
+
+    results[[grp]] <- data.frame(
+      group       = grp,
+      depth_bp    = grid,
+      mean_cov    = mean.cov,
+      sd_cov      = sd.cov,
+      se_cov      = se.cov,
+      ci_low      = ci.low,
+      ci_high     = ci.high,
+      n_samples   = n.samp,
+      n_observed  = n.obs,
+      n_projected = n.proj,
+      stringsAsFactors = FALSE
+    )
+  }
+
+  out <- do.call(rbind, results)
+  if (is.null(out) || nrow(out) == 0L) {
+    warning("No data produced for any group")
+    out <- data.frame(
+      group = character(), depth_bp = numeric(), mean_cov = numeric(),
+      sd_cov = numeric(), se_cov = numeric(),
+      ci_low = numeric(), ci_high = numeric(),
+      n_samples = integer(), n_observed = integer(), n_projected = integer(),
+      stringsAsFactors = FALSE
+    )
+  }
+  rownames(out) <- NULL
+
+  attr(out, "group.levels") <- group.levels
+  attr(out, "group.col")    <- group.col
+  attr(out, "nps")          <- nps
+  attr(out, "group")        <- group
+  class(out) <- c("Nonpareil.Group", "data.frame")
+
+  #' @return
+  #' Returns invisibly a \code{data.frame} of subclass
+  #' \code{Nonpareil.Group} with one row per (group, depth) combination and
+  #' the following columns:
+  #' \itemize{
+  #'   \item \code{group}: group label.
+  #'   \item \code{depth_bp}: sequencing depth in base pairs.
+  #'   \item \code{mean_cov}: weighted mean coverage across replicates.
+  #'   \item \code{sd_cov}: reliability-weighted within-group standard
+  #'     deviation.
+  #'   \item \code{se_cov}: standard error of the mean.
+  #'   \item \code{ci_low}, \code{ci_high}: lower/upper bounds of the
+  #'     approximate 95\% confidence interval.
+  #'   \item \code{n_samples}: number of curves contributing at this depth.
+  #'   \item \code{n_observed}: curves contributing interpolated (observed)
+  #'     data.
+  #'   \item \code{n_projected}: curves contributing model-projected data.
+  #' }
+  #' Object attributes \code{group.levels}, \code{group.col}, \code{nps}, and
+  #' \code{group} carry metadata for downstream use (e.g., by
+  #' \code{plot.Nonpareil.Set} with \code{aggregate = TRUE}).
+  #'
+  #' @examples
+  #' files <- system.file(
+  #'   "extdata",
+  #'   c("HumanGut.npo", "LakeLanier.npo", "IowaSoil.npo"),
+  #'   package = "Nonpareil"
+  #' )
+  #' nps <- Nonpareil.set(files, plot = FALSE)
+  #' # Two groups: first two curves vs. the third
+  #' grp <- Nonpareil.group(nps, group = c("A", "A", "B"))
+  #' head(grp)
+  #'
+  #' # Use plot.Nonpareil.Set convenience wrapper
+  #' plot(nps, aggregate = TRUE, group = c("A", "A", "B"))
+  invisible(out)
+}
 

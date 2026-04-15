@@ -4,7 +4,7 @@ importFrom("grDevices", "col2rgb", "rgb")
 importFrom("graphics", "abline", "arrows", "legend", "lines", "plot",
       "points", "polygon")
 importFrom("stats", "coef", "cor", "nls", "nls.control", "pgamma",
-      "predict", "qgamma")
+      "predict", "qgamma", "approx")
 importFrom("utils", "read.table", "tail")
 
 
@@ -29,5 +29,6 @@ export(Nonpareil.f,
       print.Nonpareil.Set, print.Nonpareil.Curve,
       predict.Nonpareil.Curve,
       # Main
-      Nonpareil.curve, Nonpareil.set, Nonpareil.curve.batch)
+      Nonpareil.curve, Nonpareil.set, Nonpareil.curve.batch,
+      Nonpareil.group)
 
