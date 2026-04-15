@@ -311,7 +311,7 @@ plot.Nonpareil.Set <- function(
         hi <- pmin(hi, ylim[2],        na.rm = TRUE)
         ribbon.col <- apply(
           col2rgb(gcol), 2L,
-          function(ch) do.call(rgb, as.list(c(ch[1:3] / 256, 0.2)))
+          function(ch) do.call(rgb, as.list(c(ch[1:3] / 255, 0.2)))
         )
         polygon(
           c(gd$depth_bp, rev(gd$depth_bp)),

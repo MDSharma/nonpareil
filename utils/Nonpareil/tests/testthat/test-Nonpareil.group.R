@@ -146,7 +146,7 @@ test_that("n_projected > 0 at depths beyond the smaller replicate's library", {
 
   # At depths > smallest LR there should be at least one projected value
   small_lr <- min(lrs)
-  deep_rows <- gd[gd$depth_bp > small_lr & !is.na(gd$n_projected), ]
+  deep_rows <- gd[gd$depth_bp > small_lr, ]
   if (nrow(deep_rows) > 0) {
     expect_true(any(deep_rows$n_projected > 0))
   }
